@@ -261,6 +261,8 @@ func InitResources() error {
 
 	service.InitTokenEncoders()
 
+	service.InitPromptAudit()
+
 	// Initialize SQL Database
 	err = model.InitDB()
 	if err != nil {
