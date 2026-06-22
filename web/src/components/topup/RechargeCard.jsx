@@ -585,36 +585,31 @@ const RechargeCard = ({
             value={redemptionCode}
             onChange={(value) => setRedemptionCode(value)}
             prefix={<IconGift />}
-            suffix={
-              <div className='flex items-center gap-2'>
-                <Button
-                  type='primary'
-                  theme='solid'
-                  onClick={topUp}
-                  loading={isSubmitting}
-                >
-                  {t('兑换额度')}
-                </Button>
-              </div>
-            }
+            size='large'
             showClear
             style={{ width: '100%' }}
-            extraText={
-              topUpLink && (
-                <Text type='tertiary'>
-                  {t('在找兑换码？')}
-                  <Text
-                    type='secondary'
-                    underline
-                    className='cursor-pointer'
-                    onClick={openTopUpLink}
-                  >
-                    {t('购买兑换码')}
-                  </Text>
-                </Text>
-              )
-            }
           />
+          <div className='mt-3 flex flex-col sm:flex-row sm:justify-start gap-2'>
+            <Button
+              type='primary'
+              theme='solid'
+              onClick={topUp}
+              loading={isSubmitting}
+              className='!rounded-lg !px-4 !whitespace-nowrap'
+            >
+              {t('兑换额度')}
+            </Button>
+            {topUpLink && (
+              <Button
+                type='primary'
+                theme='light'
+                onClick={openTopUpLink}
+                className='!rounded-lg !px-4 !whitespace-nowrap'
+              >
+                {t('购买兑换码')}
+              </Button>
+            )}
+          </div>
         </Form>
       </Card>
     </Space>
