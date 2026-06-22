@@ -416,6 +416,18 @@ const SiderBar = ({ onNavigate = () => {} }) => {
             // 如果没有路由，直接返回元素
             if (!to) return itemElement;
 
+            if (to === '/') {
+              return (
+                <a
+                  style={{ textDecoration: 'none' }}
+                  href={to}
+                  onClick={onNavigate}
+                >
+                  {itemElement}
+                </a>
+              );
+            }
+
             return (
               <Link
                 style={{ textDecoration: 'none' }}
