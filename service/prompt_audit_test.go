@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,23 +15,35 @@ import (
 )
 
 func TestLoadPromptAuditConfigFromEnv(t *testing.T) {
-	t.Setenv("PROMPT_AUDIT_ENABLED", "true")
 	t.Setenv("PROMPT_AUDIT_ENDPOINT_URL", " https://audit.example.com/check ")
 	t.Setenv("PROMPT_AUDIT_SECRET", "secret")
-	t.Setenv("PROMPT_AUDIT_TIMEOUT_MS", "1200")
+	t.Setenv("PROMPT_AUDIT_WAIT_MS", "800")
 	t.Setenv("PROMPT_AUDIT_QUEUE_SIZE", "32")
 	t.Setenv("PROMPT_AUDIT_WORKER_COUNT", "2")
 	t.Setenv("PROMPT_AUDIT_MAX_TEXT_BYTES", "4096")
 
 	cfg := loadPromptAuditConfig()
-	if !cfg.Enabled {
+	if !isPromptAuditConfigEnabled(cfg) {
 		t.Fatal("expected prompt audit to be enabled")
 	}
 	if cfg.EndpointURL != "https://audit.example.com/check" {
 		t.Fatalf("unexpected endpoint: %q", cfg.EndpointURL)
 	}
-	if cfg.Secret != "secret" || cfg.TimeoutMS != 1200 || cfg.QueueSize != 32 || cfg.WorkerCount != 2 || cfg.MaxTextBytes != 4096 {
+	if cfg.Secret != "secret" || cfg.WaitMS != 800 || cfg.TimeoutMS != defaultPromptAuditTimeout || cfg.QueueSize != 32 || cfg.WorkerCount != 2 || cfg.MaxTextBytes != 4096 {
 		t.Fatalf("unexpected config: %+v", cfg)
+	}
+}
+
+func TestLoadPromptAuditConfigDefaultsToDisabled(t *testing.T) {
+	t.Setenv("PROMPT_AUDIT_WAIT_MS", "")
+	t.Setenv("PROMPT_AUDIT_ENDPOINT_URL", "")
+
+	cfg := loadPromptAuditConfig()
+	if cfg.WaitMS != defaultPromptAuditWaitMS {
+		t.Fatalf("unexpected default wait ms: %d", cfg.WaitMS)
+	}
+	if isPromptAuditConfigEnabled(cfg) {
+		t.Fatal("expected prompt audit to be disabled by default")
 	}
 }
 
@@ -129,8 +142,8 @@ func TestEnqueuePromptAuditDropsWhenQueueFull(t *testing.T) {
 	})
 
 	promptAuditCfg = promptAuditConfig{
-		Enabled:      true,
 		EndpointURL:  "http://127.0.0.1/audit",
+		WaitMS:       0,
 		MaxTextBytes: defaultPromptAuditMaxText,
 	}
 	promptAuditQueue = make(chan promptAuditJob, 1)
@@ -177,9 +190,9 @@ func TestSendPromptAuditPostsPayload(t *testing.T) {
 	defer server.Close()
 
 	promptAuditCfg = promptAuditConfig{
-		Enabled:     true,
 		EndpointURL: server.URL,
 		Secret:      "secret",
+		WaitMS:      0,
 		TimeoutMS:   1000,
 	}
 
@@ -197,5 +210,75 @@ func TestSendPromptAuditPostsPayload(t *testing.T) {
 	}
 	if got.EventID != payload.EventID || got.Prompt.Text != payload.Prompt.Text {
 		t.Fatalf("unexpected posted payload: %+v", got)
+	}
+}
+
+func TestAuditPromptSyncRejectsOnExplicitReject(t *testing.T) {
+	oldCfg := promptAuditCfg
+	t.Cleanup(func() {
+		promptAuditCfg = oldCfg
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer server.Close()
+
+	promptAuditCfg = promptAuditConfig{
+		EndpointURL:  server.URL,
+		WaitMS:       1000,
+		MaxTextBytes: defaultPromptAuditMaxText,
+	}
+
+	err := AuditPrompt(nil, &relaycommon.RelayInfo{RequestId: "req-reject"}, &dto.BaseRequest{}, &types.TokenCountMeta{CombineText: "hello"})
+	if !errors.Is(err, errPromptAuditRejected) {
+		t.Fatalf("expected prompt audit rejection, got %v", err)
+	}
+}
+
+func TestAuditPromptSyncDowngradesOnServerFailure(t *testing.T) {
+	oldCfg := promptAuditCfg
+	t.Cleanup(func() {
+		promptAuditCfg = oldCfg
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	promptAuditCfg = promptAuditConfig{
+		EndpointURL:  server.URL,
+		WaitMS:       1000,
+		MaxTextBytes: defaultPromptAuditMaxText,
+	}
+
+	err := AuditPrompt(nil, &relaycommon.RelayInfo{RequestId: "req-downgrade"}, &dto.BaseRequest{}, &types.TokenCountMeta{CombineText: "hello"})
+	if err != nil {
+		t.Fatalf("expected prompt audit server failure to downgrade, got %v", err)
+	}
+}
+
+func TestAuditPromptSyncDowngradesOnTimeout(t *testing.T) {
+	oldCfg := promptAuditCfg
+	t.Cleanup(func() {
+		promptAuditCfg = oldCfg
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(100 * time.Millisecond)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	promptAuditCfg = promptAuditConfig{
+		EndpointURL:  server.URL,
+		WaitMS:       10,
+		MaxTextBytes: defaultPromptAuditMaxText,
+	}
+
+	err := AuditPrompt(nil, &relaycommon.RelayInfo{RequestId: "req-timeout"}, &dto.BaseRequest{}, &types.TokenCountMeta{CombineText: "hello"})
+	if err != nil {
+		t.Fatalf("expected prompt audit timeout to downgrade, got %v", err)
 	}
 }

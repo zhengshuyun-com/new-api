@@ -6,6 +6,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -29,12 +30,15 @@ const (
 	defaultPromptAuditQueue   = 3000
 	defaultPromptAuditWorkers = 8
 	defaultPromptAuditMaxText = 1048576
+	defaultPromptAuditWaitMS  = -1
 )
 
+var errPromptAuditRejected = errors.New("prompt audit rejected")
+
 type promptAuditConfig struct {
-	Enabled      bool
 	EndpointURL  string
 	Secret       string
+	WaitMS       int
 	TimeoutMS    int
 	QueueSize    int
 	WorkerCount  int
@@ -91,18 +95,22 @@ var (
 func InitPromptAudit() {
 	cfg := loadPromptAuditConfig()
 	promptAuditCfg = cfg
-	if !cfg.Enabled {
+	if !shouldPromptAudit(cfg) {
 		return
 	}
 	if err := validatePromptAuditEndpointURL(cfg.EndpointURL); err != nil {
 		common.FatalLog("invalid prompt audit config: " + err.Error())
 	}
 
-	promptAuditQueue = make(chan promptAuditJob, cfg.QueueSize)
-	for i := 0; i < cfg.WorkerCount; i++ {
-		go promptAuditWorker(i)
+	if cfg.WaitMS == 0 {
+		promptAuditQueue = make(chan promptAuditJob, cfg.QueueSize)
+		for i := 0; i < cfg.WorkerCount; i++ {
+			go promptAuditWorker(i)
+		}
+		common.SysLog(fmt.Sprintf("prompt audit enabled, mode: async, endpoint: %s, workers: %d, queue: %d", maskPromptAuditEndpoint(cfg.EndpointURL), cfg.WorkerCount, cfg.QueueSize))
+		return
 	}
-	common.SysLog(fmt.Sprintf("prompt audit enabled, endpoint: %s, workers: %d, queue: %d", maskPromptAuditEndpoint(cfg.EndpointURL), cfg.WorkerCount, cfg.QueueSize))
+	common.SysLog(fmt.Sprintf("prompt audit enabled, mode: sync, wait_ms: %d, endpoint: %s", cfg.WaitMS, maskPromptAuditEndpoint(cfg.EndpointURL)))
 }
 
 func PromptAuditEnabled() bool {
@@ -126,18 +134,45 @@ func EnqueuePromptAudit(c *gin.Context, info *relaycommon.RelayInfo, request dto
 	}
 }
 
+func AuditPrompt(c *gin.Context, info *relaycommon.RelayInfo, request dto.Request, meta *types.TokenCountMeta) error {
+	cfg := promptAuditCfg
+	if !isPromptAuditConfigEnabled(cfg) || info == nil || meta == nil {
+		return nil
+	}
+	if cfg.WaitMS == 0 {
+		EnqueuePromptAudit(c, info, request, meta)
+		return nil
+	}
+
+	payload, ok := buildPromptAuditPayload(c, info, request, meta, cfg)
+	if !ok {
+		return nil
+	}
+	statusCode, err := doPromptAudit(payload, cfg.WaitMS)
+	if err != nil {
+		logger.LogWarn(context.Background(), fmt.Sprintf("prompt audit sync failed, downgraded request_id=%s error=%s", payload.Request.RequestID, common.MaskSensitiveInfo(err.Error())))
+		return nil
+	}
+	if statusCode >= http.StatusOK && statusCode < http.StatusMultipleChoices {
+		return nil
+	}
+	if isPromptAuditRejectedStatus(statusCode) {
+		logger.LogWarn(context.Background(), fmt.Sprintf("prompt audit rejected request_id=%s status_code=%d", payload.Request.RequestID, statusCode))
+		return errPromptAuditRejected
+	}
+	logger.LogWarn(context.Background(), fmt.Sprintf("prompt audit sync returned status_code=%d, downgraded request_id=%s", statusCode, payload.Request.RequestID))
+	return nil
+}
+
 func loadPromptAuditConfig() promptAuditConfig {
 	cfg := promptAuditConfig{
-		Enabled:      common.GetEnvOrDefaultBool("PROMPT_AUDIT_ENABLED", false),
 		EndpointURL:  strings.TrimSpace(common.GetEnvOrDefaultString("PROMPT_AUDIT_ENDPOINT_URL", "")),
 		Secret:       common.GetEnvOrDefaultString("PROMPT_AUDIT_SECRET", ""),
-		TimeoutMS:    common.GetEnvOrDefault("PROMPT_AUDIT_TIMEOUT_MS", defaultPromptAuditTimeout),
+		WaitMS:       common.GetEnvOrDefault("PROMPT_AUDIT_WAIT_MS", defaultPromptAuditWaitMS),
+		TimeoutMS:    defaultPromptAuditTimeout,
 		QueueSize:    common.GetEnvOrDefault("PROMPT_AUDIT_QUEUE_SIZE", defaultPromptAuditQueue),
 		WorkerCount:  common.GetEnvOrDefault("PROMPT_AUDIT_WORKER_COUNT", defaultPromptAuditWorkers),
 		MaxTextBytes: common.GetEnvOrDefault("PROMPT_AUDIT_MAX_TEXT_BYTES", defaultPromptAuditMaxText),
-	}
-	if cfg.TimeoutMS <= 0 {
-		cfg.TimeoutMS = defaultPromptAuditTimeout
 	}
 	if cfg.QueueSize <= 0 {
 		cfg.QueueSize = defaultPromptAuditQueue
@@ -152,12 +187,16 @@ func loadPromptAuditConfig() promptAuditConfig {
 }
 
 func isPromptAuditConfigEnabled(cfg promptAuditConfig) bool {
-	return cfg.Enabled && strings.TrimSpace(cfg.EndpointURL) != ""
+	return shouldPromptAudit(cfg) && strings.TrimSpace(cfg.EndpointURL) != ""
+}
+
+func shouldPromptAudit(cfg promptAuditConfig) bool {
+	return cfg.WaitMS >= 0
 }
 
 func validatePromptAuditEndpointURL(endpointURL string) error {
 	if strings.TrimSpace(endpointURL) == "" {
-		return fmt.Errorf("PROMPT_AUDIT_ENDPOINT_URL is required when PROMPT_AUDIT_ENABLED=true")
+		return fmt.Errorf("PROMPT_AUDIT_ENDPOINT_URL is required when PROMPT_AUDIT_WAIT_MS >= 0")
 	}
 	parsedURL, err := url.Parse(endpointURL)
 	if err != nil {
@@ -275,17 +314,36 @@ func sendPromptAudit(payload promptAuditPayload) error {
 		return nil
 	}
 
-	body, err := common.Marshal(payload)
+	statusCode, err := doPromptAudit(payload, cfg.TimeoutMS)
 	if err != nil {
 		return err
 	}
+	if statusCode < http.StatusOK || statusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("status code %d", statusCode)
+	}
+	return nil
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(cfg.TimeoutMS)*time.Millisecond)
+func doPromptAudit(payload promptAuditPayload, timeoutMS int) (int, error) {
+	cfg := promptAuditCfg
+	if !isPromptAuditConfigEnabled(cfg) {
+		return http.StatusOK, nil
+	}
+	if timeoutMS <= 0 {
+		timeoutMS = defaultPromptAuditTimeout
+	}
+
+	body, err := common.Marshal(payload)
+	if err != nil {
+		return 0, err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutMS)*time.Millisecond)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.EndpointURL, bytes.NewReader(body))
 	if err != nil {
-		return err
+		return 0, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-NewAPI-Audit-Version", promptAuditVersion)
@@ -303,15 +361,16 @@ func sendPromptAudit(payload promptAuditPayload) error {
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
 
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return fmt.Errorf("status code %d", resp.StatusCode)
-	}
-	return nil
+	return resp.StatusCode, nil
+}
+
+func isPromptAuditRejectedStatus(statusCode int) bool {
+	return statusCode == http.StatusForbidden || statusCode == http.StatusUnavailableForLegalReasons
 }
 
 func signPromptAuditBody(secret string, timestamp string, body []byte) string {

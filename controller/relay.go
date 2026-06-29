@@ -142,10 +142,6 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 	}
 
-	if needPromptAudit {
-		service.EnqueuePromptAudit(c, relayInfo, request, meta)
-	}
-
 	tokens, err := service.EstimateRequestToken(c, meta, relayInfo)
 	if err != nil {
 		newAPIError = types.NewError(err, types.ErrorCodeCountTokenFailed)
@@ -181,6 +177,13 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			service.ChargeViolationFeeIfNeeded(c, relayInfo, newAPIError)
 		}
 	}()
+
+	if needPromptAudit {
+		if auditErr := service.AuditPrompt(c, relayInfo, request, meta); auditErr != nil {
+			newAPIError = types.NewErrorWithStatusCode(auditErr, types.ErrorCodePromptBlocked, http.StatusForbidden, types.ErrOptionWithSkipRetry())
+			return
+		}
+	}
 
 	retryParam := &service.RetryParam{
 		Ctx:        c,
