@@ -220,7 +220,8 @@ func TestAuditPromptSyncRejectsOnExplicitReject(t *testing.T) {
 	})
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusForbidden)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"code":"SUCCESS","data":{"action":"REJECT","reason":"blocked"}}`))
 	}))
 	defer server.Close()
 
@@ -233,6 +234,29 @@ func TestAuditPromptSyncRejectsOnExplicitReject(t *testing.T) {
 	err := AuditPrompt(nil, &relaycommon.RelayInfo{RequestId: "req-reject"}, &dto.BaseRequest{}, &types.TokenCountMeta{CombineText: "hello"})
 	if !errors.Is(err, errPromptAuditRejected) {
 		t.Fatalf("expected prompt audit rejection, got %v", err)
+	}
+}
+
+func TestAuditPromptSyncDowngradesOnNonOKStatus(t *testing.T) {
+	oldCfg := promptAuditCfg
+	t.Cleanup(func() {
+		promptAuditCfg = oldCfg
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer server.Close()
+
+	promptAuditCfg = promptAuditConfig{
+		EndpointURL:  server.URL,
+		WaitMS:       1000,
+		MaxTextBytes: defaultPromptAuditMaxText,
+	}
+
+	err := AuditPrompt(nil, &relaycommon.RelayInfo{RequestId: "req-non-ok"}, &dto.BaseRequest{}, &types.TokenCountMeta{CombineText: "hello"})
+	if err != nil {
+		t.Fatalf("expected prompt audit non-200 status to downgrade, got %v", err)
 	}
 }
 

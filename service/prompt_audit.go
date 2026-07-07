@@ -26,11 +26,14 @@ import (
 
 const (
 	promptAuditVersion        = "prompt_audit.v1"
+	promptAuditSuccessCode    = "SUCCESS"
+	promptAuditRejectAction   = "REJECT"
 	defaultPromptAuditTimeout = 3000
 	defaultPromptAuditQueue   = 3000
 	defaultPromptAuditWorkers = 8
 	defaultPromptAuditMaxText = 1048576
 	defaultPromptAuditWaitMS  = -1
+	promptAuditResponseLimit  = 4096
 )
 
 var errPromptAuditRejected = errors.New("prompt audit rejected")
@@ -81,6 +84,15 @@ type promptAuditPrompt struct {
 	Text      string `json:"text"`
 	TextBytes int    `json:"text_bytes"`
 	Truncated bool   `json:"truncated"`
+}
+
+type promptAuditServiceResponse struct {
+	Code string                       `json:"code"`
+	Data *promptAuditDecisionResponse `json:"data,omitempty"`
+}
+
+type promptAuditDecisionResponse struct {
+	Action string `json:"action"`
 }
 
 type promptAuditJob struct {
@@ -148,19 +160,25 @@ func AuditPrompt(c *gin.Context, info *relaycommon.RelayInfo, request dto.Reques
 	if !ok {
 		return nil
 	}
-	statusCode, err := doPromptAudit(payload, cfg.WaitMS)
+	statusCode, responseBody, err := doPromptAudit(payload, cfg.WaitMS)
 	if err != nil {
 		logger.LogWarn(context.Background(), fmt.Sprintf("prompt audit sync failed, downgraded request_id=%s error=%s", payload.Request.RequestID, common.MaskSensitiveInfo(err.Error())))
 		return nil
 	}
-	if statusCode >= http.StatusOK && statusCode < http.StatusMultipleChoices {
+	if statusCode != http.StatusOK {
+		logger.LogWarn(context.Background(), fmt.Sprintf("prompt audit sync returned status_code=%d, downgraded request_id=%s", statusCode, payload.Request.RequestID))
 		return nil
 	}
-	if isPromptAuditRejectedStatus(statusCode) {
-		logger.LogWarn(context.Background(), fmt.Sprintf("prompt audit rejected request_id=%s status_code=%d", payload.Request.RequestID, statusCode))
+
+	rejected, ok := parsePromptAuditRejected(responseBody)
+	if !ok {
+		logger.LogWarn(context.Background(), fmt.Sprintf("prompt audit sync response invalid, downgraded request_id=%s", payload.Request.RequestID))
+		return nil
+	}
+	if rejected {
+		logger.LogWarn(context.Background(), fmt.Sprintf("prompt audit rejected request_id=%s", payload.Request.RequestID))
 		return errPromptAuditRejected
 	}
-	logger.LogWarn(context.Background(), fmt.Sprintf("prompt audit sync returned status_code=%d, downgraded request_id=%s", statusCode, payload.Request.RequestID))
 	return nil
 }
 
@@ -314,7 +332,7 @@ func sendPromptAudit(payload promptAuditPayload) error {
 		return nil
 	}
 
-	statusCode, err := doPromptAudit(payload, cfg.TimeoutMS)
+	statusCode, _, err := doPromptAudit(payload, cfg.TimeoutMS)
 	if err != nil {
 		return err
 	}
@@ -324,10 +342,10 @@ func sendPromptAudit(payload promptAuditPayload) error {
 	return nil
 }
 
-func doPromptAudit(payload promptAuditPayload, timeoutMS int) (int, error) {
+func doPromptAudit(payload promptAuditPayload, timeoutMS int) (int, []byte, error) {
 	cfg := promptAuditCfg
 	if !isPromptAuditConfigEnabled(cfg) {
-		return http.StatusOK, nil
+		return http.StatusOK, nil, nil
 	}
 	if timeoutMS <= 0 {
 		timeoutMS = defaultPromptAuditTimeout
@@ -335,7 +353,7 @@ func doPromptAudit(payload promptAuditPayload, timeoutMS int) (int, error) {
 
 	body, err := common.Marshal(payload)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutMS)*time.Millisecond)
@@ -343,7 +361,7 @@ func doPromptAudit(payload promptAuditPayload, timeoutMS int) (int, error) {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.EndpointURL, bytes.NewReader(body))
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-NewAPI-Audit-Version", promptAuditVersion)
@@ -361,16 +379,30 @@ func doPromptAudit(payload promptAuditPayload, timeoutMS int) (int, error) {
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
 
-	return resp.StatusCode, nil
+	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, promptAuditResponseLimit))
+	if err != nil {
+		return resp.StatusCode, nil, err
+	}
+
+	return resp.StatusCode, responseBody, nil
 }
 
-func isPromptAuditRejectedStatus(statusCode int) bool {
-	return statusCode == http.StatusForbidden || statusCode == http.StatusUnavailableForLegalReasons
+func parsePromptAuditRejected(responseBody []byte) (bool, bool) {
+	var auditResponse promptAuditServiceResponse
+	if err := common.Unmarshal(responseBody, &auditResponse); err != nil {
+		return false, false
+	}
+	if auditResponse.Code != promptAuditSuccessCode {
+		return false, false
+	}
+	if auditResponse.Data == nil {
+		return false, true
+	}
+	return auditResponse.Data.Action == promptAuditRejectAction, true
 }
 
 func signPromptAuditBody(secret string, timestamp string, body []byte) string {
