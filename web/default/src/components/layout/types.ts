@@ -97,6 +97,13 @@ export type TopNavLink = {
   disabled?: boolean
   requiresAuth?: boolean
   external?: boolean
+  /**
+   * Force a full-page browser navigation (real HTTP request to `href`) in the
+   * current tab instead of client-side routing. Used for links whose target is
+   * handled by the reverse proxy (e.g. an Nginx-intercepted site homepage),
+   * where SPA routing would otherwise keep the user inside the app shell.
+   */
+  hardReload?: boolean
 }
 
 /**

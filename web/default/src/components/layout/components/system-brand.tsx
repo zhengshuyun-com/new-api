@@ -16,7 +16,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { Link } from '@tanstack/react-router'
 import { useTranslation } from 'react-i18next'
 
 import {
@@ -42,7 +41,9 @@ type SystemBrandProps = {
 /**
  * System brand component
  * Displays current system logo + name.
- * - inline: compact pill in the top app bar; clicking navigates to home (/)
+ * - inline: compact pill in the top app bar; clicking triggers a full-page
+ *   navigation to the site root (/) so a reverse proxy (e.g. Nginx) can serve
+ *   the intercepted homepage instead of the SPA's in-app home route
  * - sidebar: stacked card in the sidebar header (display only)
  */
 export function SystemBrand(props: SystemBrandProps) {
@@ -57,8 +58,8 @@ export function SystemBrand(props: SystemBrandProps) {
 
   if (variant === 'inline') {
     return (
-      <Link
-        to='/'
+      <a
+        href='/'
         aria-label={t('Go to home')}
         className={cn(
           'text-foreground inline-flex h-7 items-center gap-1.5 rounded-md px-1.5 text-sm font-medium transition-colors outline-none select-none',
@@ -73,7 +74,7 @@ export function SystemBrand(props: SystemBrandProps) {
           />
         </div>
         <span className='max-w-[12rem] truncate'>{name}</span>
-      </Link>
+      </a>
     )
   }
 

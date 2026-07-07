@@ -29,6 +29,12 @@ export type TopNavLink = {
   disabled?: boolean
   requiresAuth?: boolean
   external?: boolean
+  /**
+   * Force a full-page browser navigation to `href` in the current tab instead
+   * of client-side routing, so a reverse-proxy-intercepted target (e.g. the
+   * site homepage behind Nginx) is actually requested from the server.
+   */
+  hardReload?: boolean
 }
 
 /**
@@ -62,9 +68,10 @@ export function useTopNavLinks(): TopNavLink[] {
 
   const links: TopNavLink[] = []
 
-  // Home
+  // Home -> full-page navigation to site root so the reverse proxy (Nginx)
+  // can serve the intercepted homepage instead of the SPA's in-app home route.
   if (modules?.home !== false) {
-    links.push({ title: t('Home'), href: '/' })
+    links.push({ title: t('Home'), href: '/', hardReload: true })
   }
 
   // Console -> /dashboard (new console path)
