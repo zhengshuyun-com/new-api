@@ -113,6 +113,7 @@
 - 使用 TanStack Router，路由文件位于 `src/routes/`，通过 `createFileRoute` 定义；搜索参数用 Zod schema + `validateSearch` 校验。
 - 在 `beforeLoad` 中做认证与重定向，避免不必要的请求；嵌套结构用布局路由与 `_authenticated` 等前缀，子路由通过 `<Outlet />` 渲染。
 - 导航使用 `useNavigate` 或 `Link`，保持类型安全，避免直接操作 `window.location`。
+- Root path exception: visible links, logos, or buttons whose fixed destination is exactly `/` MUST use a native `<a href="/">` so Nginx can intercept the request. All non-root application links MUST remain SPA navigation.
 
 ### 3.9 错误处理
 

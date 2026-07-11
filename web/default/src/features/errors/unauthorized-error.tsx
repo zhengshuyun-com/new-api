@@ -16,14 +16,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useNavigate, useRouter } from '@tanstack/react-router'
+import { useRouter } from '@tanstack/react-router'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
 
 export function UnauthorisedError() {
   const { t } = useTranslation()
-  const navigate = useNavigate()
   const { history } = useRouter()
   return (
     <div className='h-svh'>
@@ -38,9 +37,7 @@ export function UnauthorisedError() {
           <Button variant='outline' onClick={() => history.go(-1)}>
             {t('Go Back')}
           </Button>
-          <Button onClick={() => navigate({ to: '/' })}>
-            {t('Back to Home')}
-          </Button>
+          <Button render={<a href='/' />}>{t('Back to Home')}</Button>
         </div>
       </div>
     </div>

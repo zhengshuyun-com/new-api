@@ -137,6 +137,8 @@ Do NOT directly import or call `encoding/json` in business code. `json.RawMessag
 
 **Home navigation is an intentional full-page load — do not "fix" it to SPA routing:** In `web/default`, clicking the top-left brand logo (`components/layout/components/system-brand.tsx`, `inline` variant) and the top-nav "Home" item (`hooks/use-top-nav-links.ts` sets `hardReload: true`, rendered by `components/layout/components/top-nav.tsx`) MUST navigate to the site root `/` via a native `<a href="/">` full-page load, NOT a TanStack Router `<Link to="/">`. This is deliberate: it lets a reverse proxy (e.g. Nginx) intercept `/` and serve an external/company homepage instead of the SPA's in-app home route. `web/classic` already behaves this way (native `<a href="/">`), so both frontends stay consistent. When merging upstream, preserve this behavior — if upstream reverts these entries to `<Link>`/SPA navigation, re-apply the `<a href="/">` + `hardReload` approach. Do NOT change the `Console` item (`/dashboard`) or other in-app links; those must remain SPA `<Link>` navigation.
 
+**All visible fixed root links must use a full-page load:** Any visible link, logo, or button whose fixed destination is exactly `/` MUST use a native `<a href="/">` so the reverse proxy can handle the request. All non-root application links MUST preserve their existing SPA navigation behavior.
+
 ### Project Governance
 
 **Protected project information:** The following project-related information is strictly protected and MUST NOT be modified, deleted, replaced, or removed under any circumstances:
