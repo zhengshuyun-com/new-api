@@ -137,6 +137,16 @@ Do NOT directly import or call `encoding/json` in business code. `json.RawMessag
 
 **All visible fixed root links must use a full-page load:** Any visible link, logo, or button whose fixed destination is exactly `/` MUST use a native `<a href="/">` so the reverse proxy can handle the request. All non-root application links MUST preserve their existing SPA navigation behavior.
 
+### Local Customization Invariants
+
+**Docker image publishing:** The versioned Docker release flow MUST use `.github/workflows/docker-image-arm64.yml` with one QEMU-enabled job that builds `linux/amd64,linux/arm64` together and pushes only `zhengshuyun/new-api:${TAG}`. Do not reintroduce `.github/workflows/docker-build.yml` or `.github/workflows/docker-image-branch.yml`, per-architecture intermediate tags, cosign signing, provenance, or SBOM generation unless explicitly requested. `docker-compose.yml` MUST keep `image: zhengshuyun/new-api:latest`. When upstream changes the Dockerfile or frontend layout, adapt this single-job workflow instead of replacing it with the upstream publishing topology.
+
+**Prompt audit:** Preserve the prompt audit integration in `service/prompt_audit.go`, `controller/relay.go`, `main.go`, and `docs/prompt-audit.md`. `PROMPT_AUDIT_WAIT_MS < 0` disables auditing, `= 0` runs asynchronously, and `> 0` waits synchronously. Synchronous auditing blocks only an explicit `HTTP 200` response with `code=SUCCESS` and `data.action=REJECT`; audit service failures continue to degrade open.
+
+**Streaming disconnect accounting:** `relay/helper/stream_scanner.go` intentionally continues reading the upstream stream after the downstream client disconnects so the final usage event remains available for billing. Do not restore tests or behavior that cancel the upstream read immediately on client disconnect.
+
+**Redemption purchase entry:** In `web/src/features/wallet/components/recharge-form-card.tsx`, a configured `topupLink` MUST render as an independent purchase button beside the redemption action area, with a vertical mobile layout and horizontal desktop layout. Do not regress it to a small inline text link.
+
 ### Project Governance
 
 **Protected project information:** The following project-related information is strictly protected and MUST NOT be modified, deleted, replaced, or removed under any circumstances:

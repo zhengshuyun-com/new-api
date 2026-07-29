@@ -517,7 +517,7 @@ export function RechargeFormCard({
               {t('Have a Code?')}
             </Label>
           </div>
-          <div className='grid grid-cols-[minmax(0,1fr)_auto] gap-2'>
+          <div className='space-y-2'>
             <Input
               id='redemption-code'
               value={redemptionCode}
@@ -525,30 +525,33 @@ export function RechargeFormCard({
               placeholder={t('Enter your redemption code')}
               className='h-9 min-w-0'
             />
-            <Button
-              onClick={onRedeem}
-              disabled={redeeming}
-              variant='outline'
-              className='h-9 px-4'
-            >
-              {redeeming && <Loader2 className='mr-2 h-4 w-4 animate-spin' />}
-              {t('Redeem')}
-            </Button>
-          </div>
-          {topupLink && (
-            <p className='text-muted-foreground text-xs'>
-              {t('Need a redemption code?')}{' '}
-              <a
-                href={topupLink}
-                target='_blank'
-                rel='noopener noreferrer'
-                className='inline-flex items-center gap-1 underline-offset-4 hover:underline'
+            <div className='flex flex-col gap-2 sm:flex-row'>
+              <Button
+                onClick={onRedeem}
+                disabled={redeeming}
+                className='h-9 w-full px-4 sm:w-auto'
               >
-                {t('Get one here')}
-                <ExternalLink className='h-3 w-3' />
-              </a>
-            </p>
-          )}
+                {redeeming && <Loader2 className='mr-2 h-4 w-4 animate-spin' />}
+                {t('Redeem')}
+              </Button>
+              {topupLink ? (
+                <Button
+                  variant='secondary'
+                  className='h-9 w-full px-4 sm:w-auto'
+                  render={
+                    <a
+                      href={topupLink}
+                      target='_blank'
+                      rel='noopener noreferrer'
+                    />
+                  }
+                >
+                  {t('Get one here')}
+                  <ExternalLink className='h-3.5 w-3.5' />
+                </Button>
+              ) : null}
+            </div>
+          </div>
         </div>
       ) : (
         <Alert className='border-t'>
