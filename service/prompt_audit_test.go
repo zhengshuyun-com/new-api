@@ -12,6 +12,8 @@ import (
 	"github.com/QuantumNous/new-api/dto"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/types"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestLoadPromptAuditConfigFromEnv(t *testing.T) {
@@ -20,7 +22,6 @@ func TestLoadPromptAuditConfigFromEnv(t *testing.T) {
 	t.Setenv("PROMPT_AUDIT_WAIT_MS", "800")
 	t.Setenv("PROMPT_AUDIT_QUEUE_SIZE", "32")
 	t.Setenv("PROMPT_AUDIT_WORKER_COUNT", "2")
-	t.Setenv("PROMPT_AUDIT_MAX_TEXT_BYTES", "4096")
 
 	cfg := loadPromptAuditConfig()
 	if !isPromptAuditConfigEnabled(cfg) {
@@ -29,7 +30,7 @@ func TestLoadPromptAuditConfigFromEnv(t *testing.T) {
 	if cfg.EndpointURL != "https://audit.example.com/check" {
 		t.Fatalf("unexpected endpoint: %q", cfg.EndpointURL)
 	}
-	if cfg.Secret != "secret" || cfg.WaitMS != 800 || cfg.TimeoutMS != defaultPromptAuditTimeout || cfg.QueueSize != 32 || cfg.WorkerCount != 2 || cfg.MaxTextBytes != 4096 {
+	if cfg.Secret != "secret" || cfg.WaitMS != 800 || cfg.TimeoutMS != defaultPromptAuditTimeout || cfg.QueueSize != 32 || cfg.WorkerCount != 2 {
 		t.Fatalf("unexpected config: %+v", cfg)
 	}
 }
@@ -37,6 +38,8 @@ func TestLoadPromptAuditConfigFromEnv(t *testing.T) {
 func TestLoadPromptAuditConfigDefaultsToDisabled(t *testing.T) {
 	t.Setenv("PROMPT_AUDIT_WAIT_MS", "")
 	t.Setenv("PROMPT_AUDIT_ENDPOINT_URL", "")
+	t.Setenv("PROMPT_AUDIT_QUEUE_SIZE", "")
+	t.Setenv("PROMPT_AUDIT_WORKER_COUNT", "")
 
 	cfg := loadPromptAuditConfig()
 	if cfg.WaitMS != defaultPromptAuditWaitMS {
@@ -45,6 +48,8 @@ func TestLoadPromptAuditConfigDefaultsToDisabled(t *testing.T) {
 	if isPromptAuditConfigEnabled(cfg) {
 		t.Fatal("expected prompt audit to be disabled by default")
 	}
+	assert.Equal(t, defaultPromptAuditQueue, cfg.QueueSize)
+	assert.Equal(t, defaultPromptAuditWorkers, cfg.WorkerCount)
 }
 
 func TestValidatePromptAuditEndpointURL(t *testing.T) {
@@ -98,7 +103,7 @@ func TestMaskPromptAuditEndpoint(t *testing.T) {
 	}
 }
 
-func TestBuildPromptAuditPayloadTruncatesByUTF8Bytes(t *testing.T) {
+func TestBuildPromptAuditPayloadPreservesFullText(t *testing.T) {
 	info := &relaycommon.RelayInfo{
 		RequestId:       "req-1",
 		RequestURLPath:  "/v1/chat/completions",
@@ -113,24 +118,16 @@ func TestBuildPromptAuditPayloadTruncatesByUTF8Bytes(t *testing.T) {
 		TokenGroup:      "default",
 		IsStream:        true,
 	}
-	meta := &types.TokenCountMeta{CombineText: "你好hello"}
+	meta := &types.TokenCountMeta{CombineText: strings.Repeat("a", 1048577)}
 
-	payload, ok := buildPromptAuditPayload(nil, info, &dto.BaseRequest{}, meta, promptAuditConfig{MaxTextBytes: 7})
-	if !ok {
-		t.Fatal("expected payload")
-	}
-	if payload.Prompt.Text != "你好h" {
-		t.Fatalf("unexpected truncated text: %q", payload.Prompt.Text)
-	}
-	if !payload.Prompt.Truncated {
-		t.Fatal("expected truncated flag")
-	}
-	if payload.Prompt.TextBytes != len([]byte(payload.Prompt.Text)) {
-		t.Fatal("unexpected text byte count")
-	}
-	if payload.Request.RequestID != "req-1" || !payload.Request.Stream || payload.User.ID != 11 || payload.Token.ID != 22 {
-		t.Fatalf("unexpected payload metadata: %+v", payload)
-	}
+	payload, ok := buildPromptAuditPayload(nil, info, &dto.BaseRequest{}, meta)
+	require.True(t, ok)
+	assert.Equal(t, meta.CombineText, payload.Prompt.Text)
+	assert.Equal(t, len(meta.CombineText), payload.Prompt.TextBytes)
+	assert.Equal(t, "req-1", payload.Request.RequestID)
+	assert.True(t, payload.Request.Stream)
+	assert.Equal(t, 11, payload.User.ID)
+	assert.Equal(t, 22, payload.Token.ID)
 }
 
 func TestEnqueuePromptAuditDropsWhenQueueFull(t *testing.T) {
@@ -142,9 +139,8 @@ func TestEnqueuePromptAuditDropsWhenQueueFull(t *testing.T) {
 	})
 
 	promptAuditCfg = promptAuditConfig{
-		EndpointURL:  "http://127.0.0.1/audit",
-		WaitMS:       0,
-		MaxTextBytes: defaultPromptAuditMaxText,
+		EndpointURL: "http://127.0.0.1/audit",
+		WaitMS:      0,
 	}
 	promptAuditQueue = make(chan promptAuditJob, 1)
 	promptAuditQueue <- promptAuditJob{}
@@ -226,14 +222,70 @@ func TestAuditPromptSyncRejectsOnExplicitReject(t *testing.T) {
 	defer server.Close()
 
 	promptAuditCfg = promptAuditConfig{
-		EndpointURL:  server.URL,
-		WaitMS:       1000,
-		MaxTextBytes: defaultPromptAuditMaxText,
+		EndpointURL: server.URL,
+		WaitMS:      1000,
 	}
 
 	err := AuditPrompt(nil, &relaycommon.RelayInfo{RequestId: "req-reject"}, &dto.BaseRequest{}, &types.TokenCountMeta{CombineText: "hello"})
 	if !errors.Is(err, errPromptAuditRejected) {
 		t.Fatalf("expected prompt audit rejection, got %v", err)
+	}
+}
+
+func TestParsePromptAuditRejected(t *testing.T) {
+	tests := []struct {
+		name         string
+		body         string
+		wantRejected bool
+		wantValid    bool
+	}{
+		{
+			name:         "explicit reject",
+			body:         `{"code":"SUCCESS","data":{"action":"REJECT"}}`,
+			wantRejected: true,
+			wantValid:    true,
+		},
+		{
+			name:      "allow",
+			body:      `{"code":"SUCCESS","data":{"action":"ALLOW"}}`,
+			wantValid: true,
+		},
+		{
+			name:      "empty action",
+			body:      `{"code":"SUCCESS","data":{"action":""}}`,
+			wantValid: true,
+		},
+		{
+			name:      "unknown action",
+			body:      `{"code":"SUCCESS","data":{"action":"REVIEW"}}`,
+			wantValid: true,
+		},
+		{
+			name:      "lowercase reject",
+			body:      `{"code":"SUCCESS","data":{"action":"reject"}}`,
+			wantValid: true,
+		},
+		{
+			name:      "missing data",
+			body:      `{"code":"SUCCESS"}`,
+			wantValid: true,
+		},
+		{
+			name: "non-success with reject",
+			body: `{"code":"INTERNAL_ERROR","data":{"action":"REJECT"}}`,
+		},
+		{
+			name: "invalid json",
+			body: `{`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rejected, valid := parsePromptAuditRejected([]byte(tt.body))
+			assert.Equal(t, tt.wantRejected, rejected)
+			assert.Equal(t, tt.wantValid, valid)
+		})
 	}
 }
 
@@ -249,9 +301,8 @@ func TestAuditPromptSyncDowngradesOnNonOKStatus(t *testing.T) {
 	defer server.Close()
 
 	promptAuditCfg = promptAuditConfig{
-		EndpointURL:  server.URL,
-		WaitMS:       1000,
-		MaxTextBytes: defaultPromptAuditMaxText,
+		EndpointURL: server.URL,
+		WaitMS:      1000,
 	}
 
 	err := AuditPrompt(nil, &relaycommon.RelayInfo{RequestId: "req-non-ok"}, &dto.BaseRequest{}, &types.TokenCountMeta{CombineText: "hello"})
@@ -272,9 +323,8 @@ func TestAuditPromptSyncDowngradesOnServerFailure(t *testing.T) {
 	defer server.Close()
 
 	promptAuditCfg = promptAuditConfig{
-		EndpointURL:  server.URL,
-		WaitMS:       1000,
-		MaxTextBytes: defaultPromptAuditMaxText,
+		EndpointURL: server.URL,
+		WaitMS:      1000,
 	}
 
 	err := AuditPrompt(nil, &relaycommon.RelayInfo{RequestId: "req-downgrade"}, &dto.BaseRequest{}, &types.TokenCountMeta{CombineText: "hello"})
@@ -296,9 +346,8 @@ func TestAuditPromptSyncDowngradesOnTimeout(t *testing.T) {
 	defer server.Close()
 
 	promptAuditCfg = promptAuditConfig{
-		EndpointURL:  server.URL,
-		WaitMS:       10,
-		MaxTextBytes: defaultPromptAuditMaxText,
+		EndpointURL: server.URL,
+		WaitMS:      10,
 	}
 
 	err := AuditPrompt(nil, &relaycommon.RelayInfo{RequestId: "req-timeout"}, &dto.BaseRequest{}, &types.TokenCountMeta{CombineText: "hello"})

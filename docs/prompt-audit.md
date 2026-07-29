@@ -1,95 +1,94 @@
 # 提示词审核
 
-## 功能定位
+提示词审核把中转请求通过 `Request.GetTokenCountMeta()` 提取出的 `CombineText` 发送到外部审核服务.
 
-提示词审核用于把中转请求中提取出的提示词文本发送到外部审核服务.
+该功能支持关闭, 异步送审和同步拦截. 同步模式采用 fail-open 策略, 只有审核服务返回明确拒绝结果时才阻断主请求.
 
-它支持关闭, 异步送审和同步等待三种模式. 同步模式只在审核服务明确拒绝时拦截请求, 审核服务超时, 网络错误或服务异常时会降级放行, 避免审核服务故障影响所有用户请求.
+## 执行位置
 
-## 执行顺序
+通用中转请求的处理顺序如下:
 
-一次中转请求进入后, 顺序如下:
+1. 解析并校验请求, 生成 `RelayInfo`.
+2. 提取 `TokenCountMeta`, 执行本地屏蔽词检查.
+3. 估算 token, 计算价格并完成余额预扣. 免费模型跳过预扣.
+4. 执行提示词审核.
+5. 同步审核明确拒绝时返回 HTTP 403 和 `prompt_blocked`, 已预扣额度会退款.
+6. 审核通过或降级放行后选择动态渠道并请求上游.
 
-1. 校验 token, 用户状态, 分组权限和模型权限.
-2. 选择可用渠道.
-3. 解析模型请求并提取 token 统计需要的文本元信息.
-4. 执行 New API 本地屏蔽词检查.
-5. 估算 token, 计算价格, 并完成余额预扣.
-6. 余额预扣成功后, 根据配置执行送审.
-7. 审核通过或降级放行后, 主模型请求继续中转.
+固定渠道可能已由中间件提前选定. 动态渠道在提示词审核之后选定, 因此审核事件不包含最终渠道信息. 异步审核事件入队后, 即使后续选渠或上游请求失败, 已入队事件仍会继续发送.
 
-## 配置项
-
-配置通过 `.env` 注入.
+## 配置
 
 ```env
-# 提示词审核等待时间. 可选, 默认 -1.
-# < 0: 不送审.
-# = 0: 异步送审, 主请求不等待.
-# > 0: 同步送审, 主请求最多等待 N 毫秒.
+# < 0: 关闭审核.
+# = 0: 异步送审.
+# > 0: 同步送审, 数值为主请求等待审核结果的最大毫秒数.
 PROMPT_AUDIT_WAIT_MS=0
 
-# 提示词审核接收地址. PROMPT_AUDIT_WAIT_MS >= 0 时必填, 为空或格式非法会启动失败.
+# PROMPT_AUDIT_WAIT_MS >= 0 时必填.
 PROMPT_AUDIT_ENDPOINT_URL=http://127.0.0.1:8080/test/prompt-audit
 
-# 提示词审核签名密钥. 可选, 默认空, 为空则不发送签名请求头.
+# 可选. 非空时对请求体生成 HMAC-SHA256 签名.
 PROMPT_AUDIT_SECRET=test-secret
 
-# 异步送审队列容量. 可选, 默认 3000.
-PROMPT_AUDIT_QUEUE_SIZE=3000
-
-# 异步送审 worker 数量. 可选, 默认 8.
+# 仅异步模式使用.
+PROMPT_AUDIT_QUEUE_SIZE=128
 PROMPT_AUDIT_WORKER_COUNT=8
-
-# 单次发送的提示词文本最大字节数. 可选, 默认 1048576, 约等于 1MB.
-PROMPT_AUDIT_MAX_TEXT_BYTES=1048576
 ```
+
+| 配置项 | 默认值 | 说明 |
+|---|---:|---|
+| `PROMPT_AUDIT_WAIT_MS` | `-1` | 审核模式和等待时间, 单位毫秒. `< 0` 关闭, `0` 异步, `> 0` 同步 |
+| `PROMPT_AUDIT_ENDPOINT_URL` | 空 | 审核服务地址. 启用时必填, 支持 `http` 和 `https` |
+| `PROMPT_AUDIT_SECRET` | 空 | HMAC-SHA256 签名密钥. 为空时不签名 |
+| `PROMPT_AUDIT_QUEUE_SIZE` | `128` | 异步队列容量. `<= 0` 时恢复默认值 |
+| `PROMPT_AUDIT_WORKER_COUNT` | `8` | 异步发送 worker 数量. `<= 0` 时恢复默认值 |
+
+整数配置无法解析时会记录错误日志并使用默认值. `PROMPT_AUDIT_WAIT_MS` 无法解析时回退为 `-1`, 即关闭审核.
+
+异步 HTTP 请求超时固定为 `3000ms`.
+
+审核文本不设置独立长度限制, `prompt.text` 完整发送. 来源请求仍受全局 `MAX_REQUEST_BODY_MB` 限制, 默认 `128MB`.
 
 ## 启动校验
 
-`PROMPT_AUDIT_WAIT_MS < 0` 时, 功能关闭, 不校验 endpoint.
+`PROMPT_AUDIT_WAIT_MS < 0` 时不校验 endpoint.
 
-`PROMPT_AUDIT_WAIT_MS >= 0` 时, 会校验 `PROMPT_AUDIT_ENDPOINT_URL`:
+`PROMPT_AUDIT_WAIT_MS >= 0` 时, `PROMPT_AUDIT_ENDPOINT_URL` 必须满足以下条件:
 
-- 必须非空.
-- URL 格式必须合法.
-- scheme 必须是 `http` 或 `https`.
-- host 必须非空.
+- 非空.
+- URL 可解析.
+- scheme 为 `http` 或 `https`.
+- host 非空.
 
-如果校验失败, New API 启动失败.
+校验失败时服务启动失败. 启动过程不会探测审核服务是否在线.
 
-启动时不会探测审核服务是否在线. 如果审核服务暂时不可用, New API 仍可正常启动.
+## 运行模式
 
-## 队列和降级
+### 异步模式
 
-`PROMPT_AUDIT_WAIT_MS = 0` 时使用异步队列:
+`PROMPT_AUDIT_WAIT_MS = 0` 时:
 
-- 队列没满时, 新审核事件正常入队.
-- 队列满时, 新审核事件直接丢弃, 主请求继续中转.
-- 审核服务慢或不可用时, worker 会等待直到请求成功, 失败或超时.
-- 审核服务慢本身不会直接丢弃事件, 但可能导致队列积压.
-- 只有队列满了, 才会丢弃新的审核事件.
-- 发送失败或非 2xx 响应只记录 warn 日志, 不重试, 不影响主请求.
+- 主请求完成入队后立即继续, 不等待审核结果.
+- 队列满时丢弃新事件并记录 warn 日志.
+- 每次发送的 HTTP 超时固定为 `3000ms`.
+- HTTP `2xx` 视为发送成功, 不解析业务响应.
+- 非 `2xx`, 超时, 网络错误或读取响应失败时记录 warn 日志.
+- 不重试, 不影响主请求.
 
-`PROMPT_AUDIT_WAIT_MS > 0` 时使用同步等待:
+### 同步模式
 
-- HTTP 200 响应表示审核服务已进入业务层, New API 会读取响应体判断审核结果.
-- 响应体 `code=SUCCESS` 且 `data.action=REJECT` 表示审核明确拒绝, 主请求被拦截.
-- 响应体 `code=SUCCESS` 且未明确拒绝时, 主请求继续中转.
-- 非 HTTP 200, 超时, 网络错误或响应体无法解析时会降级放行, 主请求继续中转.
+`PROMPT_AUDIT_WAIT_MS > 0` 时:
 
-当前默认值:
+- 主请求最多等待配置的毫秒数.
+- 有效审核响应中, 仅当 `data` 不为空且 `data.action=REJECT` 时拒绝主请求.
+- `data` 为空或 `data.action` 不等于 `REJECT` 时直接放行.
+- 非 `HTTP 200`, 响应读取失败, 非法 JSON, `code` 非 `SUCCESS`, 超时或网络错误时降级放行.
+- 审核请求不重试.
 
-```text
-wait: -1
-worker: 8
-queue: 3000
-max text: 1MB
-```
+审核响应体最多读取 `4096` 字节. 同步响应应控制在该限制内, 否则 JSON 可能因截断而被判定为无效并降级放行.
 
-## 发送请求
-
-发送方法:
+## HTTP 请求协议
 
 ```text
 POST PROMPT_AUDIT_ENDPOINT_URL
@@ -98,63 +97,32 @@ Content-Type: application/json
 
 固定请求头:
 
-| 请求头 | 是否必传 | 说明 |
-|---|---|---|
-| `Content-Type` | 是 | 固定为 `application/json` |
-| `X-NewAPI-Audit-Version` | 是 | 审核协议版本, 当前为 `prompt_audit.v1` |
-| `X-NewAPI-Request-ID` | 是 | New API 请求 ID |
-| `X-NewAPI-Audit-Event-ID` | 是 | 审核事件 ID, 当前使用 request id |
+| 请求头 | 值 |
+|---|---|
+| `Content-Type` | `application/json` |
+| `X-NewAPI-Audit-Version` | `v1` |
+| `X-NewAPI-Request-ID` | New API 请求 ID |
+| `X-NewAPI-Audit-Event-ID` | 当前与请求 ID 相同 |
 
-如果配置了 `PROMPT_AUDIT_SECRET`, 会额外发送:
+配置 `PROMPT_AUDIT_SECRET` 后额外发送:
 
-| 请求头 | 是否必传 | 说明 |
-|---|---|---|
-| `X-NewAPI-Audit-Timestamp` | 配置签名密钥时必传 | Unix 秒级时间戳, 用于签名 |
-| `X-NewAPI-Audit-Signature` | 配置签名密钥时必传 | HMAC-SHA256 签名, 格式为 `sha256=<hex_hmac_sha256>` |
+| 请求头 | 值 |
+|---|---|
+| `X-NewAPI-Audit-Timestamp` | Unix 秒级时间戳 |
+| `X-NewAPI-Audit-Signature` | `sha256=<hex_hmac_sha256>` |
 
-签名内容:
-
-```text
-timestamp + "." + raw_json_body
-```
-
-签名算法:
+签名输入是原始 JSON 请求体, 不得在验签前重新序列化:
 
 ```text
-HMAC-SHA256(secret, signing_content)
+signing_content = timestamp + "." + raw_json_body
+signature = HMAC-SHA256(secret, signing_content)
 ```
 
-## 响应要求
-
-异步模式下, 审核服务只需要返回 2xx HTTP 状态码即可, 不要求返回特定 JSON 格式.
-
-同步模式下, 审核服务必须返回 HTTP 200, 并使用 Java 项目的统一响应体表达审核结果. 非 HTTP 200 会被视为中间链路或基础设施异常, New API 会降级放行.
-
-常用返回方式:
+## 请求体
 
 ```json
 {
-  "code": "SUCCESS",
-  "msg": "成功",
-  "data": {
-    "action": "ALLOW",
-    "reason": null
-  },
-  "timestamp": "2026-06-30T00:00:00Z"
-}
-```
-
-异步模式下, 审核服务返回非 2xx 状态码, 请求超时或网络错误时, New API 只记录 warn 日志, 不重试, 不影响当前模型请求.
-
-同步模式下, 只有 HTTP 200 且响应体为 `code=SUCCESS`, `data.action=REJECT` 时会拦截当前模型请求. 其他情况都会降级放行.
-
-## 请求体协议
-
-请求体示例:
-
-```json
-{
-  "version": "prompt_audit.v1",
+  "version": "v1",
   "event_id": "20260622210132727140000OW90u6llkfXOscAX",
   "sent_at": "2026-06-22T21:01:32.72714Z",
   "source": "new-api",
@@ -178,95 +146,126 @@ HMAC-SHA256(secret, signing_content)
   },
   "prompt": {
     "text": "system\n你是一个严谨的中文技术助手\nuser\n这是一次提示词审核异步推送测试",
-    "text_bytes": 105,
-    "truncated": false
+    "text_bytes": 97
   }
 }
 ```
 
-字段说明:
+字段定义:
 
-| 字段 | 示例 | 说明 |
+| 字段 | 说明 |
+|---|---|
+| `version` | 固定为 `v1` |
+| `event_id` | 当前使用 New API 请求 ID |
+| `sent_at` | UTC 时间, RFC3339Nano 格式 |
+| `source` | 固定为 `new-api` |
+| `request.request_id` | New API 请求 ID |
+| `request.path` | 原始请求路径, 不含 query |
+| `request.relay_format` | 中转协议格式 |
+| `request.relay_mode` | 内部中转模式整数值 |
+| `request.model` | 客户端请求的原始模型名称 |
+| `request.stream` | 是否为流式请求 |
+| `user.id` | 用户 ID |
+| `user.email` | 用户邮箱, 空值时省略 |
+| `user.group` | 用户分组, 空值时省略 |
+| `user.using_group` | 实际计费分组, 空值时省略 |
+| `token.id` | Token ID |
+| `token.group` | Token 分组, 空值时省略 |
+| `prompt.text` | 从模型请求中提取并完整发送的审核文本 |
+| `prompt.text_bytes` | `prompt.text` 的 UTF-8 字节数 |
+
+`prompt.text` 为空或仅包含空白字符时不发送审核请求.
+
+## 响应判定
+
+异步和同步模式使用不同的响应规则:
+
+| 模式 | HTTP 状态码 | 响应体 |
 |---|---|---|
-| `version` | `prompt_audit.v1` | 协议版本, 当前为 `prompt_audit.v1` |
-| `event_id` | `20260622210132727140000OW90u6llkfXOscAX` | 审核事件 ID, 当前使用 request id |
-| `sent_at` | `2026-06-22T21:01:32.72714Z` | New API 生成事件的 UTC 时间 |
-| `source` | `new-api` | 来源服务, 固定为 `new-api` |
-| `request.request_id` | `20260622210132727140000OW90u6llkfXOscAX` | New API 请求 ID |
-| `request.path` | `/v1/chat/completions` | 原始请求路径 |
-| `request.relay_format` | `openai` | 中转协议格式 |
-| `request.relay_mode` | `1` | 中转模式 |
-| `request.model` | `gpt-5.4-mini` | 原始模型名称 |
-| `request.stream` | `false` | 是否流式请求 |
-| `user.id` | `1` | 用户 ID |
-| `user.email` | `user@example.com` | 用户邮箱 |
-| `user.group` | `default` | 用户分组 |
-| `user.using_group` | `default` | 实际使用分组 |
-| `token.id` | `1` | token ID |
-| `token.group` | `default` | token 分组 |
-| `prompt.text` | `system\n你是一个严谨的中文技术助手\nuser\n这是一次提示词审核异步推送测试` | 提取出的文本内容 |
-| `prompt.text_bytes` | `105` | `prompt.text` 的 UTF-8 字节数 |
-| `prompt.truncated` | `false` | 是否因超过 `PROMPT_AUDIT_MAX_TEXT_BYTES` 被截断 |
+| 异步 | `2xx` 表示发送成功, 非 `2xx` 表示发送失败 | 不解析业务内容 |
+| 同步 | 只有 `HTTP 200` 才继续判断业务结果, 非 `HTTP 200` 直接降级放行 | 有效响应中仅当 `data` 不为空且 `data.action=REJECT` 时拒绝 |
 
-## 提示词提取范围
+因此, "只判断 HTTP 状态码" 仅适用于异步模式. 同步模式会先判断 HTTP 状态码, 再判断响应体.
 
-提示词审核发送的是 New API 已提取的文本, 不是原始 HTTP body.
+有效审核响应要求 HTTP 状态码为 `200`, JSON 可以解析且 `code=SUCCESS`. 同步拦截规则可以概括为: 仅当 `data` 不为空且 `data.action=REJECT` 时拒绝, 其他情况全部放行.
 
-OpenAI chat 类请求中, 通常会进入 `prompt.text` 的内容包括:
+### 同步响应协议
 
-- message role.
-- string content.
-- 多模态 content 数组中的 `type=text` 文本.
-- 部分 tools 的名称, 描述和参数.
+允许请求:
 
-不会进入 `prompt.text` 的内容包括:
+```json
+{
+  "code": "SUCCESS",
+  "data": {
+    "action": "ALLOW"
+  }
+}
+```
 
-- `image_url` 图片 URL 或 base64 图片内容.
-- `input_audio` 音频内容.
-- `file` 文件内容.
-- `video_url` 视频内容.
+拒绝请求:
 
-这些多模态内容可能会用于 token 计费的文件元信息, 但不会发送到提示词审核的请求体中.
+```json
+{
+  "code": "SUCCESS",
+  "data": {
+    "action": "REJECT"
+  }
+}
+```
 
-如果用户把 URL 或 base64 当普通文本写在 `content` 里, 它仍会作为文本进入 `prompt.text`.
+判定规则区分大小写:
+
+| HTTP 和响应体 | 结果 |
+|---|---|
+| `HTTP 200`, `code=SUCCESS`, `data != null`, `data.action=REJECT` | 拒绝 |
+| `HTTP 200`, `code=SUCCESS`, `data == null` 或 `data.action != REJECT` | 放行 |
+| `HTTP 200`, code 非 `SUCCESS` | 降级放行 |
+| 非 `HTTP 200` | 降级放行 |
+| 空响应体或非法 JSON | 降级放行 |
+| 超时, 网络错误或读取失败 | 降级放行 |
+
+响应体可以包含 `msg`, `timestamp`, `reason` 等额外字段, New API 不读取这些字段.
+
+## 文本提取范围
+
+审核服务收到的是 `TokenCountMeta.CombineText`, 不是原始 HTTP body. 只有文本进入 `prompt.text`, `TokenCountMeta.Files` 中的文件元信息不会发送.
+
+| 请求类型 | 进入 `prompt.text` 的内容 |
+|---|---|
+| OpenAI Chat 和 Completions | `prompt`, `input`, message role, message name, 文本 content, tool 名称, 描述和参数 |
+| OpenAI Responses | 文本 input, instructions, metadata, text, tool choice, prompt 和 tools |
+| OpenAI Responses Compaction | instructions 和 input |
+| Claude Messages | system 文本, message role 和文本, tool use, tool result, tool 定义 |
+| Gemini Chat | `contents[].parts[].text` |
+| OpenAI 和 Gemini Embedding | embedding input 文本 |
+| Rerank | documents 和 query |
+| Image | prompt |
+| Audio | input |
+| Alpha Search | 原始 JSON 请求体 |
+
+OpenAI, Claude 和 Gemini 多模态请求中的图片, 音频, 文件和视频数据不会进入 `prompt.text`. 如果 URL 或 base64 作为普通文本字段传入, 它仍会进入审核文本.
 
 ## 日志
 
-New API 侧日志行为:
+- 启动成功时记录模式和脱敏后的 endpoint.
+- 队列满, 发送失败, 同步响应无效和明确拒绝时记录 warn.
+- 成功发送不记录逐条日志.
 
-- 启动成功时记录功能启用日志, endpoint 会脱敏.
-- 队列满时记录 warn.
-- 发送失败时记录 warn, 错误文本会脱敏.
-- 成功发送不记录逐条日志, 避免高并发下日志量过大.
+## 联调
 
-## 测试请求
-
-可以用普通 chat completions 请求触发提示词审核:
+使用普通 Chat Completions 请求触发审核:
 
 ```bash
 curl -i 'http://127.0.0.1:3000/v1/chat/completions' \
-  -H 'Authorization: Bearer sk-你的-new-api-token' \
+  -H 'Authorization: Bearer sk-your-token' \
   -H 'Content-Type: application/json' \
   -d '{
     "model": "gpt-5.4-mini",
     "messages": [
-      {
-        "role": "system",
-        "content": "你是一个严谨的中文技术助手, 回答要直接."
-      },
-      {
-        "role": "user",
-        "content": "我想测试多轮对话下提示词审核收到的文本."
-      },
-      {
-        "role": "assistant",
-        "content": "可以发送包含 system, user, assistant 历史消息的请求来观察."
-      },
-      {
-        "role": "user",
-        "content": "这是第二轮用户消息, 请总结前面对话."
-      }
+      {"role": "user", "content": "prompt audit integration test"}
     ],
     "stream": false
   }'
 ```
+
+同步拒绝场景应返回 HTTP 403, 错误码为 `prompt_blocked`. 异步模式下审核服务的响应内容不会改变主请求结果.

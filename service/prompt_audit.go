@@ -13,7 +13,6 @@ import (
 	"net/url"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
@@ -25,13 +24,12 @@ import (
 )
 
 const (
-	promptAuditVersion        = "prompt_audit.v1"
+	promptAuditVersion        = "v1"
 	promptAuditSuccessCode    = "SUCCESS"
 	promptAuditRejectAction   = "REJECT"
 	defaultPromptAuditTimeout = 3000
-	defaultPromptAuditQueue   = 3000
+	defaultPromptAuditQueue   = 128
 	defaultPromptAuditWorkers = 8
-	defaultPromptAuditMaxText = 1048576
 	defaultPromptAuditWaitMS  = -1
 	promptAuditResponseLimit  = 4096
 )
@@ -39,13 +37,12 @@ const (
 var errPromptAuditRejected = errors.New("prompt audit rejected")
 
 type promptAuditConfig struct {
-	EndpointURL  string
-	Secret       string
-	WaitMS       int
-	TimeoutMS    int
-	QueueSize    int
-	WorkerCount  int
-	MaxTextBytes int
+	EndpointURL string
+	Secret      string
+	WaitMS      int
+	TimeoutMS   int
+	QueueSize   int
+	WorkerCount int
 }
 
 type promptAuditPayload struct {
@@ -83,7 +80,6 @@ type promptAuditToken struct {
 type promptAuditPrompt struct {
 	Text      string `json:"text"`
 	TextBytes int    `json:"text_bytes"`
-	Truncated bool   `json:"truncated"`
 }
 
 type promptAuditServiceResponse struct {
@@ -134,7 +130,7 @@ func EnqueuePromptAudit(c *gin.Context, info *relaycommon.RelayInfo, request dto
 		return
 	}
 
-	payload, ok := buildPromptAuditPayload(c, info, request, meta, promptAuditCfg)
+	payload, ok := buildPromptAuditPayload(c, info, request, meta)
 	if !ok {
 		return
 	}
@@ -156,7 +152,7 @@ func AuditPrompt(c *gin.Context, info *relaycommon.RelayInfo, request dto.Reques
 		return nil
 	}
 
-	payload, ok := buildPromptAuditPayload(c, info, request, meta, cfg)
+	payload, ok := buildPromptAuditPayload(c, info, request, meta)
 	if !ok {
 		return nil
 	}
@@ -184,22 +180,18 @@ func AuditPrompt(c *gin.Context, info *relaycommon.RelayInfo, request dto.Reques
 
 func loadPromptAuditConfig() promptAuditConfig {
 	cfg := promptAuditConfig{
-		EndpointURL:  strings.TrimSpace(common.GetEnvOrDefaultString("PROMPT_AUDIT_ENDPOINT_URL", "")),
-		Secret:       common.GetEnvOrDefaultString("PROMPT_AUDIT_SECRET", ""),
-		WaitMS:       common.GetEnvOrDefault("PROMPT_AUDIT_WAIT_MS", defaultPromptAuditWaitMS),
-		TimeoutMS:    defaultPromptAuditTimeout,
-		QueueSize:    common.GetEnvOrDefault("PROMPT_AUDIT_QUEUE_SIZE", defaultPromptAuditQueue),
-		WorkerCount:  common.GetEnvOrDefault("PROMPT_AUDIT_WORKER_COUNT", defaultPromptAuditWorkers),
-		MaxTextBytes: common.GetEnvOrDefault("PROMPT_AUDIT_MAX_TEXT_BYTES", defaultPromptAuditMaxText),
+		EndpointURL: strings.TrimSpace(common.GetEnvOrDefaultString("PROMPT_AUDIT_ENDPOINT_URL", "")),
+		Secret:      common.GetEnvOrDefaultString("PROMPT_AUDIT_SECRET", ""),
+		WaitMS:      common.GetEnvOrDefault("PROMPT_AUDIT_WAIT_MS", defaultPromptAuditWaitMS),
+		TimeoutMS:   defaultPromptAuditTimeout,
+		QueueSize:   common.GetEnvOrDefault("PROMPT_AUDIT_QUEUE_SIZE", defaultPromptAuditQueue),
+		WorkerCount: common.GetEnvOrDefault("PROMPT_AUDIT_WORKER_COUNT", defaultPromptAuditWorkers),
 	}
 	if cfg.QueueSize <= 0 {
 		cfg.QueueSize = defaultPromptAuditQueue
 	}
 	if cfg.WorkerCount <= 0 {
 		cfg.WorkerCount = defaultPromptAuditWorkers
-	}
-	if cfg.MaxTextBytes <= 0 {
-		cfg.MaxTextBytes = defaultPromptAuditMaxText
 	}
 	return cfg
 }
@@ -233,7 +225,7 @@ func maskPromptAuditEndpoint(endpointURL string) string {
 	return common.MaskSensitiveInfo(endpointURL)
 }
 
-func buildPromptAuditPayload(c *gin.Context, info *relaycommon.RelayInfo, request dto.Request, meta *types.TokenCountMeta, cfg promptAuditConfig) (promptAuditPayload, bool) {
+func buildPromptAuditPayload(c *gin.Context, info *relaycommon.RelayInfo, request dto.Request, meta *types.TokenCountMeta) (promptAuditPayload, bool) {
 	text := ""
 	if meta != nil {
 		text = meta.CombineText
@@ -242,7 +234,6 @@ func buildPromptAuditPayload(c *gin.Context, info *relaycommon.RelayInfo, reques
 		return promptAuditPayload{}, false
 	}
 
-	text, truncated := truncateTextByBytes(text, cfg.MaxTextBytes)
 	requestID := info.RequestId
 	if requestID == "" && c != nil {
 		requestID = c.GetString(common.RequestIdKey)
@@ -277,8 +268,7 @@ func buildPromptAuditPayload(c *gin.Context, info *relaycommon.RelayInfo, reques
 		},
 		Prompt: promptAuditPrompt{
 			Text:      text,
-			TextBytes: len([]byte(text)),
-			Truncated: truncated,
+			TextBytes: len(text),
 		},
 	}, true
 }
@@ -291,31 +281,6 @@ func isPromptAuditStream(c *gin.Context, info *relaycommon.RelayInfo, request dt
 		return request.IsStream(c)
 	}
 	return false
-}
-
-func truncateTextByBytes(text string, maxBytes int) (string, bool) {
-	if maxBytes <= 0 {
-		return "", text != ""
-	}
-	if len([]byte(text)) <= maxBytes {
-		return text, false
-	}
-
-	var builder strings.Builder
-	builder.Grow(maxBytes)
-	written := 0
-	for _, r := range text {
-		runeLen := utf8.RuneLen(r)
-		if runeLen < 0 {
-			runeLen = len(string(r))
-		}
-		if written+runeLen > maxBytes {
-			break
-		}
-		builder.WriteRune(r)
-		written += runeLen
-	}
-	return builder.String(), true
 }
 
 func promptAuditWorker(workerID int) {
