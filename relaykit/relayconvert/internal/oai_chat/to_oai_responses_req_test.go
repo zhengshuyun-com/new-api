@@ -84,6 +84,46 @@ func TestChatCompletionsRequestToResponsesRequestRejectsMultipleChoices(t *testi
 	assert.Contains(t, err.Error(), "n>1")
 }
 
+func TestChatCompletionsRequestToResponsesRequestPreservesPromptCacheKey(t *testing.T) {
+	req := &dto.GeneralOpenAIRequest{
+		Model:                "gpt-test",
+		PromptCacheKey:       "session-stable-key",
+		PromptCacheRetention: json.RawMessage(`"24h"`),
+		Messages: []dto.Message{
+			{Role: "user", Content: "hello"},
+		},
+	}
+
+	got, err := ChatCompletionsRequestToResponsesRequest(req)
+	require.NoError(t, err)
+	assert.Equal(t, `"session-stable-key"`, string(got.PromptCacheKey))
+	assert.Equal(t, json.RawMessage(`"24h"`), got.PromptCacheRetention)
+
+	encoded, err := kitutil.Marshal(got)
+	require.NoError(t, err)
+	assert.Equal(t, "session-stable-key", gjson.GetBytes(encoded, "prompt_cache_key").String())
+	assert.Equal(t, "24h", gjson.GetBytes(encoded, "prompt_cache_retention").String())
+}
+
+func TestChatCompletionsRequestToResponsesRequestOmitsEmptyPromptCacheKey(t *testing.T) {
+	req := &dto.GeneralOpenAIRequest{
+		Model: "gpt-test",
+		Messages: []dto.Message{
+			{Role: "user", Content: "hi"},
+		},
+	}
+
+	got, err := ChatCompletionsRequestToResponsesRequest(req)
+	require.NoError(t, err)
+	assert.Empty(t, got.PromptCacheKey)
+	assert.Empty(t, got.PromptCacheRetention)
+
+	encoded, err := kitutil.Marshal(got)
+	require.NoError(t, err)
+	assert.False(t, gjson.GetBytes(encoded, "prompt_cache_key").Exists())
+	assert.False(t, gjson.GetBytes(encoded, "prompt_cache_retention").Exists())
+}
+
 func assistantMessageWithTool(content string, id string, name string, args string) dto.Message {
 	msg := dto.Message{Role: "assistant", Content: content}
 	msg.SetToolCalls([]dto.ToolCallRequest{

@@ -249,6 +249,14 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		if !shouldRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry()) {
 			break
 		}
+		// Channel affinity must only affect the first attempt: if the
+		// affinity-selected channel failed and retry is allowed, restart the
+		// priority walk from the highest priority (already-failed channels are
+		// excluded via use_channel). Otherwise the retry index would map to the
+		// affinity channel's own priority level and keep re-selecting it.
+		if retryParam.GetRetry() == 0 && service.IsChannelAffinityUsed(c) {
+			retryParam.ResetRetryNextTry()
+		}
 	}
 
 	useChannel := c.GetStringSlice("use_channel")
@@ -577,6 +585,9 @@ func RelayTask(c *gin.Context) {
 
 		if !shouldRetryTaskRelay(c, channel.Id, taskErr, common.RetryTimes-retryParam.GetRetry()) {
 			break
+		}
+		if retryParam.GetRetry() == 0 && service.IsChannelAffinityUsed(c) {
+			retryParam.ResetRetryNextTry()
 		}
 	}
 

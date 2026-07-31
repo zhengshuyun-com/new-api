@@ -355,6 +355,11 @@ func ChatCompletionsRequestToResponsesRequest(req *dto.GeneralOpenAIRequest) (*d
 		parallelToolCallsRaw, _ = kitutil.Marshal(*req.ParallelTooCalls)
 	}
 
+	var promptCacheKeyRaw json.RawMessage
+	if req.PromptCacheKey != "" {
+		promptCacheKeyRaw, _ = kitutil.Marshal(req.PromptCacheKey)
+	}
+
 	textRaw := convertChatResponseFormatToResponsesText(req.ResponseFormat)
 
 	maxOutputTokens := lo.FromPtrOr(req.MaxTokens, uint(0))
@@ -373,21 +378,23 @@ func ChatCompletionsRequestToResponsesRequest(req *dto.GeneralOpenAIRequest) (*d
 	}
 
 	out := &dto.OpenAIResponsesRequest{
-		Model:             req.Model,
-		Input:             inputRaw,
-		Instructions:      instructionsRaw,
-		Stream:            req.Stream,
-		Temperature:       req.Temperature,
-		Text:              textRaw,
-		ToolChoice:        toolChoiceRaw,
-		Tools:             toolsRaw,
-		TopP:              topP,
-		User:              req.User,
-		ParallelToolCalls: parallelToolCallsRaw,
-		Store:             req.Store,
-		Metadata:          req.Metadata,
-		EnableThinking:    req.EnableThinking,
-		ThinkingBudget:    req.ThinkingBudget,
+		Model:                req.Model,
+		Input:                inputRaw,
+		Instructions:         instructionsRaw,
+		Stream:               req.Stream,
+		Temperature:          req.Temperature,
+		Text:                 textRaw,
+		ToolChoice:           toolChoiceRaw,
+		Tools:                toolsRaw,
+		TopP:                 topP,
+		User:                 req.User,
+		ParallelToolCalls:    parallelToolCallsRaw,
+		Store:                req.Store,
+		Metadata:             req.Metadata,
+		PromptCacheKey:       promptCacheKeyRaw,
+		PromptCacheRetention: req.PromptCacheRetention,
+		EnableThinking:       req.EnableThinking,
+		ThinkingBudget:       req.ThinkingBudget,
 	}
 	if req.MaxTokens != nil || req.MaxCompletionTokens != nil {
 		out.MaxOutputTokens = lo.ToPtr(maxOutputTokens)
