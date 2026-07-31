@@ -15,10 +15,10 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/logger"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
-	"github.com/QuantumNous/new-api/types"
+	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/types"
 
 	"github.com/gin-gonic/gin"
 )
@@ -278,7 +278,10 @@ func isPromptAuditStream(c *gin.Context, info *relaycommon.RelayInfo, request dt
 		return info.IsStream
 	}
 	if request != nil {
-		return request.IsStream(c)
+		if c == nil {
+			return request.IsStream(nil)
+		}
+		return request.IsStream(c.Request)
 	}
 	return false
 }

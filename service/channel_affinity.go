@@ -10,10 +10,10 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/pkg/cachex"
+	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
-	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/samber/hot"
 	"github.com/tidwall/gjson"
@@ -25,6 +25,7 @@ const (
 	ginKeyChannelAffinityMeta       = "channel_affinity_meta"
 	ginKeyChannelAffinityLogInfo    = "channel_affinity_log_info"
 	ginKeyChannelAffinitySkipRetry  = "channel_affinity_skip_retry_on_failure"
+	ginKeyChannelAffinityUsed       = "channel_affinity_used"
 
 	channelAffinityCacheNamespace           = "new-api:channel_affinity:v1"
 	channelAffinityUsageCacheStatsNamespace = "new-api:channel_affinity_usage_cache_stats:v1"
@@ -681,6 +682,7 @@ func MarkChannelAffinityUsed(c *gin.Context, selectedGroup string, channelID int
 	if !ok {
 		return
 	}
+	c.Set(ginKeyChannelAffinityUsed, true)
 	c.Set(ginKeyChannelAffinitySkipRetry, meta.SkipRetry)
 	info := map[string]interface{}{
 		"reason":         meta.RuleName,
@@ -697,6 +699,21 @@ func MarkChannelAffinityUsed(c *gin.Context, selectedGroup string, channelID int
 		"key_fp":         meta.KeyFingerprint,
 	}
 	c.Set(ginKeyChannelAffinityLogInfo, info)
+}
+
+// IsChannelAffinityUsed reports whether the current request actually selected
+// its first channel through a channel-affinity rule (as opposed to only having
+// matched a rule without a usable cached channel).
+func IsChannelAffinityUsed(c *gin.Context) bool {
+	if c == nil {
+		return false
+	}
+	v, ok := c.Get(ginKeyChannelAffinityUsed)
+	if !ok {
+		return false
+	}
+	b, ok := v.(bool)
+	return ok && b
 }
 
 func AppendChannelAffinityAdminInfo(c *gin.Context, adminInfo map[string]interface{}) {

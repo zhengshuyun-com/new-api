@@ -2,6 +2,8 @@ package service
 
 import (
 	"errors"
+	"strconv"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -46,6 +48,27 @@ func (p *RetryParam) ResetRetryNextTry() {
 	p.resetNextTry = true
 }
 
+// usedChannelIDsFromContext returns the set of channel ids already attempted in
+// this request ("use_channel"), so retries never select a channel that just
+// failed. A nil map means no exclusion.
+func usedChannelIDsFromContext(c *gin.Context) map[int]bool {
+	if c == nil {
+		return nil
+	}
+	ids := c.GetStringSlice("use_channel")
+	if len(ids) == 0 {
+		return nil
+	}
+	exclude := make(map[int]bool, len(ids))
+	for _, raw := range ids {
+		id, err := strconv.Atoi(strings.TrimSpace(raw))
+		if err == nil && id > 0 {
+			exclude[id] = true
+		}
+	}
+	return exclude
+}
+
 // CacheGetRandomSatisfiedChannel tries to get a random channel that satisfies the requirements.
 // 尝试获取一个满足要求的随机渠道。
 //
@@ -86,6 +109,7 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 	var err error
 	selectGroup := param.TokenGroup
 	userGroup := common.GetContextKeyString(param.Ctx, constant.ContextKeyUserGroup)
+	excludeChannelIds := usedChannelIDsFromContext(param.Ctx)
 
 	if param.TokenGroup == "auto" {
 		if len(setting.GetAutoGroups()) == 0 {
@@ -116,7 +140,7 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			}
 			logger.LogDebug(param.Ctx, "Auto selecting group: %s, priorityRetry: %d", autoGroup, priorityRetry)
 
-			channel, _ = model.GetRandomSatisfiedChannel(autoGroup, param.ModelName, priorityRetry, param.RequestPath)
+			channel, _ = model.GetRandomSatisfiedChannel(autoGroup, param.ModelName, priorityRetry, param.RequestPath, excludeChannelIds)
 			if channel == nil {
 				// Current group has no available channel for this model, try next group
 				// 当前分组没有该模型的可用渠道，尝试下一个分组
@@ -154,7 +178,7 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			break
 		}
 	} else {
-		channel, err = model.GetRandomSatisfiedChannel(param.TokenGroup, param.ModelName, param.GetRetry(), param.RequestPath)
+		channel, err = model.GetRandomSatisfiedChannel(param.TokenGroup, param.ModelName, param.GetRetry(), param.RequestPath, excludeChannelIds)
 		if err != nil {
 			return nil, param.TokenGroup, err
 		}

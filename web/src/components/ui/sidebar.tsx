@@ -28,6 +28,7 @@ import * as React from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
+import { useDirection } from '@/context/direction-provider'
 import {
   Sheet,
   SheetContent,
@@ -183,6 +184,11 @@ function Sidebar({
   collapsible?: 'offcanvas' | 'icon' | 'none'
 }) {
   const { isMobile, state, openMobile, setOpenMobile } = useSidebar()
+  const { dir: direction } = useDirection()
+  // In RTL layouts the sidebar must sit on the opposite side of the screen.
+  // Resolve the default 'left' to 'right' so positioning, borders and the rail
+  // all flip together via the existing data-side styling.
+  const resolvedSide = direction === 'rtl' && side === 'left' ? 'right' : side
 
   if (collapsible === 'none') {
     return (
@@ -213,7 +219,7 @@ function Sidebar({
               '--sidebar-width': SIDEBAR_WIDTH_MOBILE,
             } as React.CSSProperties
           }
-          side={side}
+          side={resolvedSide}
         >
           <SheetHeader className='sr-only'>
             <SheetTitle>Sidebar</SheetTitle>
@@ -231,7 +237,7 @@ function Sidebar({
       data-state={state}
       data-collapsible={state === 'collapsed' ? collapsible : ''}
       data-variant={variant}
-      data-side={side}
+      data-side={resolvedSide}
       data-slot='sidebar'
     >
       {/* This is what handles the sidebar gap on desktop */}
@@ -248,7 +254,7 @@ function Sidebar({
       />
       <div
         data-slot='sidebar-container'
-        data-side={side}
+        data-side={resolvedSide}
         className={cn(
           'fixed top-[var(--app-header-height,0px)] bottom-0 z-10 hidden h-[calc(100svh-var(--app-header-height,0px))] w-(--sidebar-width) transition-[left,right,width] duration-200 ease-linear data-[side=left]:left-0 data-[side=left]:group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)] data-[side=right]:right-0 data-[side=right]:group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)] md:flex',
           // Adjust the padding for floating and inset variants.

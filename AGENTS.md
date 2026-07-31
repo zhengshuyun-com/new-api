@@ -6,6 +6,12 @@ DO NOT send optional commentary
 
 This is an AI API gateway/proxy built with Go. It aggregates 40+ upstream AI providers (OpenAI, Claude, Gemini, Azure, AWS Bedrock, etc.) behind a unified API, with user management, billing, rate limiting, and an admin dashboard.
 
+## Pull Requests
+
+- All PRs for this project are opened on the `xhnhhnh/new-api` fork (https://github.com/xhnhhnh/new-api/pull/new/...), targeting that fork's `main` branch by default.
+- Push feature/fix branches to the `fork` remote (`https://github.com/xhnhhnh/new-api.git`) and create the PR with `gh pr create --repo xhnhhnh/new-api`.
+- Do not push directly to `origin` (`zhengshuyun-com/new-api`) or open PRs against it; it requires different credentials/access.
+
 ## Tech Stack
 
 - **Backend**: Go 1.22+, Gin web framework, GORM v2 ORM
@@ -63,6 +69,11 @@ web/           — Frontend (React 19, Rsbuild, Base UI, Tailwind)
 - If a single-use helper is kept, its name must describe a durable domain concept rather than a mechanical step extracted only to shorten the caller.
 
 ### Backend Rules
+
+**relaykit module independence:** The `relaykit/` Go module MUST remain independently buildable.
+
+- Code under `relaykit/` MUST NOT import or depend on packages from the root `new-api` module, or rely on root-only configuration, generated files, or workspace wiring.
+- Any change affecting `relaykit/` or its public APIs MUST be verified with `cd relaykit && GOWORK=off go build ./...`; a successful root-module build is not sufficient.
 
 **JSON package:** All JSON marshal/unmarshal operations MUST use the wrapper functions in `common/json.go`:
 
