@@ -8,9 +8,8 @@ This is an AI API gateway/proxy built with Go. It aggregates 40+ upstream AI pro
 
 ## Pull Requests
 
-- All PRs for this project are opened on the `xhnhhnh/new-api` fork (https://github.com/xhnhhnh/new-api/pull/new/...), targeting that fork's `main` branch by default.
-- Push feature/fix branches to the `fork` remote (`https://github.com/xhnhhnh/new-api.git`) and create the PR with `gh pr create --repo xhnhhnh/new-api`.
-- Do not push directly to `origin` (`zhengshuyun-com/new-api`) or open PRs against it; it requires different credentials/access.
+- The default PR destination for this project is `zhengshuyun-com/new-api`, targeting its `main` branch.
+- `origin` points to `zhengshuyun-com/new-api` but direct push is not available with the current account; push feature/fix branches to the `fork` remote (`https://github.com/xhnhhnh/new-api.git`) and open the PR against `zhengshuyun-com/new-api` with `gh pr create --repo zhengshuyun-com/new-api --head xhnhhnh:<branch>`.
 
 ## Tech Stack
 
