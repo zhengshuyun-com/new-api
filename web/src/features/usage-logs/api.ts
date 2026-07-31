@@ -18,7 +18,6 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { api } from '@/lib/api'
 
-import { buildQueryParams } from './lib/utils'
 import type {
   GetLogsParams,
   GetLogsResponse,
@@ -35,6 +34,25 @@ import type {
 
 function buildApiPath(endpoint: string, isAdmin: boolean): string {
   return isAdmin ? endpoint : `${endpoint}/self`
+}
+
+/**
+ * Build query parameters from filters. Kept local to this module so it does
+ * not create an import cycle with ./lib/utils (which imports from ./api).
+ */
+export function buildQueryParams(
+  params: Record<string, unknown>
+): URLSearchParams {
+  const queryParams = new URLSearchParams()
+
+  Object.entries(params).forEach(([key, value]) => {
+    // Keep 0 as a valid value, only filter out undefined, null, and empty string
+    if (value !== undefined && value !== null && value !== '') {
+      queryParams.append(key, String(value))
+    }
+  })
+
+  return queryParams
 }
 
 async function fetchLogs<T>(

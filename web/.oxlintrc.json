@@ -42,7 +42,10 @@
     "no-array-constructor": "error",
     "no-console": "warn",
     "no-duplicate-imports": "error",
-    "no-nested-ternary": "error",
+    // Kept as warnings instead of errors: the upstream codebase uses nested
+    // ternaries and index-based React keys heavily; enforcing these as errors
+    // would require a large style refactor that diverges from upstream.
+    "no-nested-ternary": "warn",
     "no-new-wrappers": "error",
     "no-regex-spaces": "error",
     "no-unsafe-finally": "warn",
@@ -90,7 +93,7 @@
     "react/jsx-no-undef": "error",
     "react/jsx-no-useless-fragment": "error",
     "react/jsx-props-no-spread-multi": "warn",
-    "react/no-array-index-key": "error",
+    "react/no-array-index-key": "warn",
     "react/no-danger": "warn",
     "react/no-unknown-property": "warn",
     "react/no-unstable-nested-components": [
