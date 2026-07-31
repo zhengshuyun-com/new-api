@@ -85,6 +85,28 @@ func TestNewStreamScanner_AllowsLargeStreamLine(t *testing.T) {
 	require.NoError(t, scanner.Err())
 }
 
+func TestStreamScannerHandler_HandlesSSELineLargerThan64KB(t *testing.T) {
+	// Regression: a single SSE data line larger than bufio.Scanner's default
+	// 64KB token limit used to surface as "scanner_error" and truncate the
+	// stream (e.g. long reasoning_content chunks, base64 media, large function
+	// call arguments). The scanner buffer must grow up to its configured max so
+	// the full event is delivered.
+	payload := strings.Repeat("x", 200<<10) // 200KB > 64KB default limit
+	body := "data: " + payload + "\n"
+
+	c, resp, info := setupStreamTest(t, strings.NewReader(body))
+
+	var got string
+	StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {
+		got = data
+	})
+
+	assert.Equal(t, payload, got)
+	require.NotNil(t, info.StreamStatus)
+	assert.Equal(t, relaycommon.StreamEndReasonEOF, info.StreamStatus.EndReason)
+	assert.False(t, info.StreamStatus.HasErrors())
+}
+
 func TestStreamScannerHandler_EmptyBody(t *testing.T) {
 	t.Parallel()
 

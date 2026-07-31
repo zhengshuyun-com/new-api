@@ -10,6 +10,8 @@
 *.yml text eol=lf
 *.toml text eol=lf
 *.md text eol=lf
+go.mod text eol=lf
+*.sum text eol=lf
 
 # JavaScript/TypeScript files
 *.js text eol=lf
@@ -34,4 +36,10 @@
 # ============================================
 # GitHub Linguist - Language Detection
 # ============================================
+# Keep frontend TypeScript logic visible while excluding the TSX view layer,
+# whose markup-heavy files otherwise outweigh the primary Go service by bytes.
+web/**/*.tsx -linguist-detectable
 electron/** linguist-vendored
+
+# TanStack Router regenerates this manifest from the route source files.
+web/src/routeTree.gen.ts linguist-generated

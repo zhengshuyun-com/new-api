@@ -169,16 +169,29 @@ func VideoProxy(c *gin.Context) {
 		return
 	}
 
-	for key, values := range resp.Header {
-		for _, value := range values {
-			c.Writer.Header().Add(key, value)
-		}
-	}
+	copyVideoProxyResponseHeaders(c.Writer.Header(), resp.Header)
 
 	c.Writer.Header().Set("Cache-Control", "public, max-age=86400")
 	c.Writer.WriteHeader(resp.StatusCode)
 	if _, err = io.Copy(c.Writer, resp.Body); err != nil {
 		logger.LogError(c.Request.Context(), fmt.Sprintf("Failed to stream video content: %s", err.Error()))
+	}
+}
+
+// copyVideoProxyResponseHeaders copies upstream response headers to the
+// downstream writer. CORS headers are intentionally not copied: they are
+// managed exclusively by the current instance's CORS middleware, and appending
+// upstream Access-Control-* values would produce duplicated headers (e.g. two
+// Access-Control-Allow-Origin values) that browsers reject for cross-origin
+// video fetches. All other headers, including multi-value headers, pass through.
+func copyVideoProxyResponseHeaders(dst http.Header, src http.Header) {
+	for key, values := range src {
+		if strings.HasPrefix(strings.ToLower(key), "access-control-") {
+			continue
+		}
+		for _, value := range values {
+			dst.Add(key, value)
+		}
 	}
 }
 

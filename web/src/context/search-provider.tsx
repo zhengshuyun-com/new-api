@@ -16,9 +16,22 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { createContext, useContext, useEffect, useState } from 'react'
+import {
+  createContext,
+  lazy,
+  Suspense,
+  useContext,
+  useEffect,
+  useState,
+} from 'react'
 
-import { CommandMenu } from '@/components/command-menu'
+// Lazy import breaks the static import cycle with command-menu.tsx (which
+// consumes useSearch from this module).
+const CommandMenu = lazy(() =>
+  import('@/components/command-menu').then((module) => ({
+    default: module.CommandMenu,
+  }))
+)
 
 type SearchContextType = {
   open: boolean
@@ -48,7 +61,9 @@ export function SearchProvider({ children }: SearchProviderProps) {
   return (
     <SearchContext.Provider value={{ open, setOpen }}>
       {children}
-      <CommandMenu />
+      <Suspense fallback={null}>
+        <CommandMenu />
+      </Suspense>
     </SearchContext.Provider>
   )
 }

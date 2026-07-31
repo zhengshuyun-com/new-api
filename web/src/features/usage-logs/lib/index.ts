@@ -41,11 +41,14 @@ export {
   getLogTypeConfig,
   isPerCallBilling,
   getDefaultTimeRange,
-  buildQueryParams,
   buildBaseParams,
   buildApiParams,
   fetchLogsByCategory,
 } from './utils'
+
+// buildQueryParams lives in ../api to avoid an import cycle between api.ts and
+// lib/utils.ts; re-export it from the same public surface as before.
+export { buildQueryParams } from '../api'
 
 // Status mapper utilities
 export { createStatusMapper } from './status'

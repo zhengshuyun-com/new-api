@@ -61,6 +61,9 @@ export function TagInput({
       e.preventDefault()
       addTag(inputValue)
     } else if (e.key === 'Backspace' && !inputValue && value.length > 0) {
+      // .at(-1) returns `string | undefined` in the TS lib, which breaks this
+      // non-optional usage; keep index access.
+      // eslint-disable-next-line unicorn/prefer-at
       removeTag(value[value.length - 1])
     }
   }
